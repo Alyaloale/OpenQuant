@@ -255,6 +255,19 @@ class PaperTrader:
             total += pos["quantity"] * p
         return total
 
+    def get_daily_realized_pnl(self) -> float:
+        """获取今日已实现盈亏"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE time LIKE ? AND pnl IS NOT NULL",
+                    (f"{today}%",),
+                ).fetchone()
+                return float(row[0]) if row else 0.0
+        except Exception:
+            return 0.0
+
     def get_status(self, prices: Optional[Dict[str, float]] = None) -> dict:
         """获取账户状态"""
         pv = self.get_portfolio_value(prices)

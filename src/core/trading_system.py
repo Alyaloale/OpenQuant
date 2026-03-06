@@ -12,7 +12,7 @@ from typing import List, Optional
 from src.analyzer.minimax_client import MiniMaxClient
 from src.config.loader import get_runtime_config
 from src.core.models import SignalType, TradeSignal
-from src.data.akshare_fetcher import get_stock_data, load_watchlist
+from src.data.akshare_fetcher import fetch_realtime, get_stock_data, load_watchlist
 from src.execution.paper_trader import PaperTrader
 from src.notification.dingtalk import send_dingtalk
 from src.notification.feishu import send_feishu
@@ -126,19 +126,32 @@ class TradingSystem:
         return signals
 
     def _get_position_weights(self) -> dict:
-        """当前各标的仓位占比"""
-        pv = self.paper_trader.get_portfolio_value()
+        """当前各标的仓位占比（使用市价）"""
+        positions = self.paper_trader.get_positions()
+        if not positions:
+            return {}
+        # 获取各持仓的当前市价
+        prices = {}
+        for pos in positions:
+            rt = fetch_realtime(pos["symbol"])
+            prices[pos["symbol"]] = rt.get("price", pos["cost"]) if rt else pos["cost"]
+        pv = self.paper_trader.get_portfolio_value(prices)
         if pv <= 0:
             return {}
         weights = {}
-        for pos in self.paper_trader.get_positions():
-            mv = pos["quantity"] * pos["cost"]
+        for pos in positions:
+            price = prices.get(pos["symbol"], pos["cost"])
+            mv = pos["quantity"] * price
             weights[pos["symbol"]] = mv / pv
         return weights
 
     def _get_daily_pnl_pct(self) -> float:
-        """今日盈亏占比（简化）"""
-        return 0
+        """今日已实现盈亏占总资产比例"""
+        pv = self.paper_trader.get_portfolio_value()
+        if pv <= 0:
+            return 0.0
+        daily_pnl = self.paper_trader.get_daily_realized_pnl()
+        return daily_pnl / pv
 
     def run_once(
         self,

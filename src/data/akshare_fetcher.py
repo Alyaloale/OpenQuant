@@ -18,6 +18,26 @@ logger = logging.getLogger(__name__)
 FETCH_DELAY = 1.5
 MAX_RETRIES = 2
 
+# 全市场 spot 缓存（避免扫描多只股票时重复下载 5000+ 条数据）
+_spot_cache: dict = {"df": None, "ts": 0}
+_SPOT_CACHE_TTL = 60  # 秒
+
+
+def _get_spot_em_cached() -> pd.DataFrame:
+    """获取东方财富全市场 spot，带 60 秒缓存"""
+    now = time.time()
+    if _spot_cache["df"] is not None and (now - _spot_cache["ts"]) < _SPOT_CACHE_TTL:
+        return _spot_cache["df"]
+    try:
+        df = ak.stock_zh_a_spot_em()
+        if df is not None and not df.empty:
+            _spot_cache["df"] = df
+            _spot_cache["ts"] = now
+            return df
+    except Exception as e:
+        logger.debug("获取全市场 spot 失败: %s", e)
+    return _spot_cache["df"] if _spot_cache["df"] is not None else pd.DataFrame()
+
 # 目标列名（与 prompt_builder 一致）
 COL_DATE = "日期"
 COL_OPEN = "开盘"
@@ -207,9 +227,9 @@ def fetch_stock_valuation(symbol: str) -> pd.DataFrame:
                     rows.append({"指标": col, "数值": last[col]})
     except Exception as e:
         logger.debug("获取财务指标失败 %s: %s", symbol, e)
-    # 2. PE/PB：东方财富全市场 spot 筛选
+    # 2. PE/PB：东方财富全市场 spot 筛选（使用缓存）
     try:
-        df_spot = ak.stock_zh_a_spot_em()
+        df_spot = _get_spot_em_cached()
         if df_spot is not None and not df_spot.empty:
             code_col = "代码" if "代码" in df_spot.columns else df_spot.columns[0]
             row = df_spot[df_spot[code_col].astype(str).str.zfill(6) == str(symbol).zfill(6)]
@@ -358,8 +378,8 @@ def fetch_realtime(symbol: str) -> dict:
 
 
 def _fetch_spot_em(symbol: str) -> dict:
-    """东方财富实时（全市场后筛选）"""
-    df = ak.stock_zh_a_spot_em()
+    """东方财富实时（全市场后筛选，使用缓存）"""
+    df = _get_spot_em_cached()
     if df is None or df.empty:
         return {}
     code_col = "代码" if "代码" in df.columns else df.columns[0]

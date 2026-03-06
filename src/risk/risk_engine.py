@@ -26,6 +26,8 @@ class RiskEngine:
         """加载 trading.yaml"""
         cfg = {
             "max_position_pct": 0.30,
+            "max_positions": 5,
+            "min_position_pct": 0.05,
             "stop_loss_pct": 0.05,
             "take_profit_pct": 0.10,
             "max_daily_loss_pct": 0.02,
@@ -97,6 +99,13 @@ class RiskEngine:
 
         # 3. 仓位
         if signal.signal == SignalType.BUY:
+            # 最大持仓数量
+            max_positions = int(self._config.get("max_positions", 5))
+            current_count = len([w for w in positions.values() if w > 0])
+            if signal.symbol not in positions and current_count >= max_positions:
+                return False, f"持仓数量已达上限 {current_count}/{max_positions}"
+
+            # 单票最大仓位
             current_weight = positions.get(signal.symbol, 0)
             new_weight = current_weight + signal.position_size
             if new_weight > self.max_position_pct:
@@ -105,13 +114,23 @@ class RiskEngine:
                     f"> {self.max_position_pct:.1%}"
                 )
 
+            # 单票最小仓位
+            min_pos = float(self._config.get("min_position_pct", 0.05))
+            if signal.position_size < min_pos:
+                return False, f"建议仓位 {signal.position_size:.1%} 低于最小仓位 {min_pos:.1%}"
+
         # 4. 止损止盈合理性
         if signal.stop_loss is not None and signal.take_profit is not None:
             if signal.signal == SignalType.BUY:
                 if signal.stop_loss >= current_price:
-                    return False, f"止损价 {signal.stop_loss} 应低于当前价 {current_price}"
+                    return False, f"买入止损价 {signal.stop_loss} 应低于当前价 {current_price}"
                 if signal.take_profit <= current_price:
-                    return False, f"止盈价 {signal.take_profit} 应高于当前价 {current_price}"
+                    return False, f"买入止盈价 {signal.take_profit} 应高于当前价 {current_price}"
+            elif signal.signal == SignalType.SELL:
+                if signal.stop_loss <= current_price:
+                    return False, f"卖出止损价 {signal.stop_loss} 应高于当前价 {current_price}"
+                if signal.take_profit >= current_price:
+                    return False, f"卖出止盈价 {signal.take_profit} 应低于当前价 {current_price}"
 
         return True, "通过"
 
