@@ -73,6 +73,22 @@ class PaperTrader:
                     value REAL
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    time TEXT,
+                    symbol TEXT,
+                    signal TEXT,
+                    confidence REAL,
+                    reason TEXT,
+                    stop_loss REAL,
+                    take_profit REAL,
+                    position_size REAL,
+                    risk_passed INTEGER,
+                    risk_reason TEXT,
+                    investment_mode TEXT
+                )
+            """)
 
     def _load_state(self):
         """从数据库加载持仓与现金（跨会话持久化）"""
@@ -238,6 +254,59 @@ class PaperTrader:
                         datetime.now().isoformat(),
                     ),
                 )
+
+    def save_signal(
+        self,
+        signal: TradeSignal,
+        risk_passed: bool,
+        risk_reason: str = "",
+        investment_mode: str = "medium",
+    ):
+        """保存 AI 分析信号到历史记录"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO signals (time, symbol, signal, confidence, reason,
+                        stop_loss, take_profit, position_size, risk_passed, risk_reason, investment_mode)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        datetime.now().isoformat(),
+                        signal.symbol,
+                        signal.signal.value,
+                        signal.confidence,
+                        signal.reason,
+                        signal.stop_loss,
+                        signal.take_profit,
+                        signal.position_size,
+                        1 if risk_passed else 0,
+                        risk_reason,
+                        investment_mode,
+                    ),
+                )
+        except Exception as e:
+            logger.warning("保存信号历史失败: %s", e)
+
+    def get_signal_history(self, limit: int = 20, symbol: str = None) -> List[dict]:
+        """查询信号历史记录"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                if symbol:
+                    rows = conn.execute(
+                        "SELECT * FROM signals WHERE symbol = ? ORDER BY id DESC LIMIT ?",
+                        (symbol.strip().zfill(6), limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM signals ORDER BY id DESC LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+                return [dict(r) for r in rows]
+        except Exception as e:
+            logger.warning("查询信号历史失败: %s", e)
+            return []
 
     def get_positions(self) -> List[dict]:
         """获取当前持仓"""

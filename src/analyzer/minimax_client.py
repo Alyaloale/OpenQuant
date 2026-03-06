@@ -49,7 +49,7 @@ def _build_system_prompt(mode: str, trade_mode: str = "paper") -> str:
 
 
 class MiniMaxClient:
-    """MiniMax API 客户端 (Anthropic 兼容)，配置来自 config/model.yaml"""
+    """AI 分析客户端，支持 MiniMax / DeepSeek 等多模型，配置来自 config/model.yaml"""
 
     def __init__(
         self,
@@ -58,8 +58,10 @@ class MiniMaxClient:
         model: Optional[str] = None,
         timeout: Optional[float] = None,
         trade_mode: str = "paper",
+        provider: Optional[str] = None,
     ):
-        cfg = get_model_config()
+        self.provider = (provider or "minimax").lower()
+        cfg = get_model_config(self.provider)
         self.api_key = api_key or cfg.get("api_key", "")
         self.base_url = (base_url or cfg.get("base_url", "https://api.minimaxi.com/anthropic")).rstrip("/")
         self.model = model or cfg.get("model", "MiniMax-M2.5")
@@ -68,7 +70,7 @@ class MiniMaxClient:
         self.trade_mode = trade_mode
 
         if not self.api_key:
-            raise ValueError("未设置 API Key，请在 config/model.yaml 的 minimax.api_key 中配置")
+            raise ValueError(f"未设置 API Key，请在 config/model.yaml 的 {self.provider}.api_key 中配置")
 
     def analyze(
         self,
@@ -107,13 +109,17 @@ class MiniMaxClient:
         return parse_analysis_response(symbol, raw)
 
     def _call_api(self, prompt: str, max_retries: int = 3, investment_mode: str = "medium") -> str:
-        """调用 MiniMax API"""
-        url = f"{self.base_url}/v1/messages"
+        """调用 AI API（根据 provider 切换路径和格式）"""
+        if self.provider == "deepseek":
+            url = f"{self.base_url}/chat/completions"
+        else:
+            url = f"{self.base_url}/v1/messages"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
-            "x-api-key": self.api_key,
         }
+        if self.provider == "minimax":
+            headers["x-api-key"] = self.api_key
         system_content = _build_system_prompt(investment_mode, self.trade_mode)
         payload = {
             "model": self.model,

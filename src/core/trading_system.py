@@ -58,14 +58,14 @@ class Notifier:
 class TradingSystem:
     """主交易系统"""
 
-    def __init__(self):
+    def __init__(self, provider: str = None):
         rt = get_runtime_config()
         self.mode = rt["trade_mode"]
-        self.analyzer = MiniMaxClient(trade_mode=self.mode)
+        self.analyzer = MiniMaxClient(trade_mode=self.mode, provider=provider)
         self.risk_engine = RiskEngine()
         self.notifier = Notifier()
         self.paper_trader = PaperTrader(initial_capital=rt["initial_capital"])
-        logger.info("交易系统初始化完成，交易模式: %s，投资模式: %s", self.mode, self.risk_engine.investment_mode)
+        logger.info("交易系统初始化完成，交易模式: %s，投资模式: %s，模型: %s", self.mode, self.risk_engine.investment_mode, provider or "默认")
 
     def scan(
         self,
@@ -107,6 +107,12 @@ class TradingSystem:
                 )
                 if not passed:
                     logger.info("%s 未通过风控: %s", symbol, reason)
+
+                # 记录信号历史（不论是否通过风控）
+                self.paper_trader.save_signal(
+                    signal, risk_passed=passed, risk_reason=reason,
+                    investment_mode=mode,
+                )
 
                 # 置信度低也输出分析结果，供参考；DingTalk/Feishu 仅推送可执行信号
                 is_actionable = passed and signal.signal != SignalType.HOLD and signal.confidence >= self.risk_engine.min_confidence * 100

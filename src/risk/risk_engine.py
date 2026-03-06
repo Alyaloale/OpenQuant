@@ -134,13 +134,59 @@ class RiskEngine:
 
         return True, "通过"
 
-    def check_stop_loss(self, position: dict, current_price: float) -> bool:
-        """检查是否触发止损"""
+    def check_stop_loss(self, position: dict, current_price: float) -> Tuple[bool, str]:
+        """
+        检查是否触发止损
+        优先使用 AI 设定的具体价位，其次使用百分比阈值
+        返回: (triggered, reason)
+        """
         cost = position.get("cost") or position.get("price")
         if cost is None:
-            return False
+            return False, ""
+        # 1. AI 设定的具体止损价
+        sl_price = position.get("stop_loss")
+        if sl_price is not None and sl_price > 0 and current_price <= sl_price:
+            return True, f"触发止损价 {sl_price:.2f} (当前 {current_price:.2f})"
+        # 2. 百分比阈值
         stop_pct = self._config.get("stop_loss_pct", 0.05)
-        return current_price <= cost * (1 - stop_pct)
+        threshold = cost * (1 - stop_pct)
+        if current_price <= threshold:
+            return True, f"跌幅 {(1 - current_price / cost):.1%} 超过止损线 {stop_pct:.0%} (成本 {cost:.2f})"
+        return False, ""
+
+    def check_take_profit(self, position: dict, current_price: float) -> Tuple[bool, str]:
+        """
+        检查是否触发止盈
+        优先使用 AI 设定的具体价位，其次使用百分比阈值
+        返回: (triggered, reason)
+        """
+        cost = position.get("cost") or position.get("price")
+        if cost is None:
+            return False, ""
+        # 1. AI 设定的具体止盈价
+        tp_price = position.get("take_profit")
+        if tp_price is not None and tp_price > 0 and current_price >= tp_price:
+            return True, f"触发止盈价 {tp_price:.2f} (当前 {current_price:.2f})"
+        # 2. 百分比阈值
+        tp_pct = self._config.get("take_profit_pct", 0.10)
+        threshold = cost * (1 + tp_pct)
+        if current_price >= threshold:
+            return True, f"涨幅 {(current_price / cost - 1):.1%} 超过止盈线 {tp_pct:.0%} (成本 {cost:.2f})"
+        return False, ""
+
+    def check_position_alerts(self, position: dict, current_price: float) -> list:
+        """
+        检查持仓的止损止盈告警
+        返回告警列表: [{"type": "stop_loss"/"take_profit", "reason": str}]
+        """
+        alerts = []
+        triggered, reason = self.check_stop_loss(position, current_price)
+        if triggered:
+            alerts.append({"type": "stop_loss", "reason": reason})
+        triggered, reason = self.check_take_profit(position, current_price)
+        if triggered:
+            alerts.append({"type": "take_profit", "reason": reason})
+        return alerts
 
     def check_daily_limit(self, daily_pnl_pct: float) -> bool:
         """是否触发单日风控（停止交易）"""

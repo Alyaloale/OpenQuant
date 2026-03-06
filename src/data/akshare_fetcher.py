@@ -6,6 +6,7 @@
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -552,30 +553,47 @@ def get_stock_data(
 
     etf = _is_etf(symbol)
 
-    # ETF 使用专用接口获取基本面（溢价率、重仓股等）
-    if etf:
-        info = fetch_stock_info(symbol)
-        time.sleep(FETCH_DELAY)
-        news = fetch_stock_news(symbol)
-        time.sleep(FETCH_DELAY)
-        # ETF 实时信息（溢价率等）放入 valuation
-        valuation = fetch_etf_realtime_info(symbol)
-        time.sleep(FETCH_DELAY)
-        # ETF 重仓股放入 holder
-        holder = fetch_etf_holdings(symbol)
-        fund_flow = pd.DataFrame()
-    else:
-        info = fetch_stock_info(symbol)
-        time.sleep(FETCH_DELAY)
-        news = fetch_stock_news(symbol)
-        time.sleep(FETCH_DELAY)
-        fund_flow = fetch_fund_flow(symbol)
-        time.sleep(FETCH_DELAY)
-        holder = fetch_holder_stats(symbol)
-        time.sleep(FETCH_DELAY)
-        valuation = fetch_stock_valuation(symbol)
+    # 并行获取辅助数据（info/news/fund_flow/holder/valuation）
+    info = pd.DataFrame()
+    news: List[str] = []
+    fund_flow = pd.DataFrame()
+    holder = pd.DataFrame()
+    valuation = pd.DataFrame()
 
-    time.sleep(FETCH_DELAY)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        if etf:
+            futures = {
+                executor.submit(fetch_stock_info, symbol): "info",
+                executor.submit(fetch_stock_news, symbol): "news",
+                executor.submit(fetch_etf_realtime_info, symbol): "valuation",
+                executor.submit(fetch_etf_holdings, symbol): "holder",
+            }
+        else:
+            futures = {
+                executor.submit(fetch_stock_info, symbol): "info",
+                executor.submit(fetch_stock_news, symbol): "news",
+                executor.submit(fetch_fund_flow, symbol): "fund_flow",
+                executor.submit(fetch_holder_stats, symbol): "holder",
+                executor.submit(fetch_stock_valuation, symbol): "valuation",
+            }
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                result = future.result()
+                if key == "info":
+                    info = result
+                elif key == "news":
+                    news = result
+                elif key == "fund_flow":
+                    fund_flow = result
+                elif key == "holder":
+                    holder = result
+                elif key == "valuation":
+                    valuation = result
+            except Exception as e:
+                logger.debug("并行获取 %s/%s 失败: %s", symbol, key, e)
+
+    # sector 依赖 info 结果，串行获取
     industry_name = ""
     if info is not None and not info.empty and "item" in info.columns and "value" in info.columns:
         ir = info[info["item"].astype(str).str.contains("行业", na=False)]

@@ -36,6 +36,12 @@ def main():
         default=None,
         help="投资模式: short(短线)/medium(中线)/long(长线)，默认用 config/trading.yaml",
     )
+    scan_parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="AI 模型: minimax/deepseek，默认用 config/model.yaml",
+    )
 
     # run: 定时模式
     run_parser = subparsers.add_parser("run", help="启动定时扫描模式")
@@ -51,6 +57,12 @@ def main():
         choices=["short", "medium", "long"],
         default=None,
         help="投资模式: short/medium/long",
+    )
+    run_parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="AI 模型: minimax/deepseek",
     )
 
     # status: 查看持仓
@@ -78,6 +90,12 @@ def main():
         default=None,
         help="投资模式: short/medium/long",
     )
+    pick_parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="AI 模型: minimax/deepseek",
+    )
 
     # watch: 实时监控
     watch_parser = subparsers.add_parser("watch", help="实时监控股价（轮询，有延迟）")
@@ -93,6 +111,11 @@ def main():
     rm_p = wl_sub.add_parser("remove", help="移除")
     rm_p.add_argument("symbol", help="股票代码")
 
+    # history: 信号历史
+    hist_parser = subparsers.add_parser("history", help="查看 AI 分析信号历史")
+    hist_parser.add_argument("--limit", type=int, default=20, help="显示条数")
+    hist_parser.add_argument("--symbol", type=str, default=None, help="按股票代码筛选")
+
     # test: 运行测试
     subparsers.add_parser("test", help="运行测试套件")
 
@@ -104,11 +127,11 @@ def main():
 
     if args.command == "scan":
         from src.ui.cli import run_scan
-        return run_scan(symbols=args.symbols, mode=getattr(args, "mode", None))
+        return run_scan(symbols=args.symbols, mode=getattr(args, "mode", None), model=getattr(args, "model", None))
 
     elif args.command == "run":
         from src.ui.cli import run_scheduler
-        return run_scheduler(interval=args.interval, mode=getattr(args, "mode", None))
+        return run_scheduler(interval=args.interval, mode=getattr(args, "mode", None), model=getattr(args, "model", None))
 
     elif args.command == "status":
         from src.ui.cli import show_status
@@ -120,11 +143,15 @@ def main():
 
     elif args.command == "pick":
         from src.ui.cli import run_pick
-        return run_pick(pool=args.pool, limit=args.limit, add=args.add, mode=getattr(args, "mode", None))
+        return run_pick(pool=args.pool, limit=args.limit, add=args.add, mode=getattr(args, "mode", None), model=getattr(args, "model", None))
 
     elif args.command == "watch":
         from src.ui.cli import run_watch
         return run_watch(symbols=args.symbols, interval=args.interval)
+
+    elif args.command == "history":
+        from src.ui.cli import show_history
+        return show_history(limit=args.limit, symbol=args.symbol)
 
     elif args.command == "watchlist":
         from src.ui.cli import (

@@ -65,28 +65,30 @@ def confirm_signal(signal: TradeSignal) -> bool:
             print("请输入 y/n/d/s")
 
 
-def run_scan(symbols: str = None, mode: str = None) -> int:
+def run_scan(symbols: str = None, mode: str = None, model: str = None) -> int:
     """单次扫描自选股"""
-    if not get_model_config().get("api_key"):
-        print("错误: 未设置 API Key，请在 config/model.yaml 的 minimax.api_key 中配置")
+    provider = model or "minimax"
+    if not get_model_config(provider).get("api_key"):
+        print(f"错误: 未设置 API Key，请在 config/model.yaml 的 {provider}.api_key 中配置")
         return 1
 
     watchlist = None
     if symbols:
         watchlist = [s.strip() for s in symbols.split(",") if s.strip()]
 
-    system = TradingSystem()
-    print(f"扫描模式: {mode or 'medium'}")
+    system = TradingSystem(provider=model)
+    print(f"扫描模式: {mode or 'medium'}" + (f"，模型: {model}" if model else ""))
     system.run_once(watchlist=watchlist, investment_mode=mode)
     return 0
 
 
-def run_scheduler(interval: int = 30, mode: str = None) -> int:
+def run_scheduler(interval: int = 30, mode: str = None, model: str = None) -> int:
     """定时扫描模式"""
-    if not get_model_config().get("api_key"):
-        print("错误: 未设置 API Key，请在 config/model.yaml 的 minimax.api_key 中配置")
+    provider = model or "minimax"
+    if not get_model_config(provider).get("api_key"):
+        print(f"错误: 未设置 API Key，请在 config/model.yaml 的 {provider}.api_key 中配置")
         return 1
-    system = TradingSystem()
+    system = TradingSystem(provider=model)
     system.run_schedule(interval_minutes=interval, investment_mode=mode)
     return 0
 
@@ -122,14 +124,15 @@ def generate_report(period: str = "day") -> int:
     return 0
 
 
-def run_pick(pool: str = "hot", limit: int = 20, add: bool = False, mode: str = None) -> int:
+def run_pick(pool: str = "hot", limit: int = 20, add: bool = False, mode: str = None, model: str = None) -> int:
     """AI 选股：从股池中筛选并可选加入自选"""
-    if not get_model_config().get("api_key"):
-        print("错误: 未设置 API Key，请在 config/model.yaml 的 minimax.api_key 中配置")
+    provider = model or "minimax"
+    if not get_model_config(provider).get("api_key"):
+        print(f"错误: 未设置 API Key，请在 config/model.yaml 的 {provider}.api_key 中配置")
         return 1
     symbols = get_stock_pool(source=pool, limit=limit)
-    print(f"\n从 {pool} 股池选取 {len(symbols)} 只，扫描模式: {mode or 'medium'}")
-    system = TradingSystem()
+    print(f"\n从 {pool} 股池选取 {len(symbols)} 只，扫描模式: {mode or 'medium'}" + (f"，模型: {model}" if model else ""))
+    system = TradingSystem(provider=model)
     signals = system.scan(watchlist=symbols, investment_mode=mode)
     if not signals:
         print("无符合条件标的")
@@ -147,29 +150,106 @@ def run_pick(pool: str = "hot", limit: int = 20, add: bool = False, mode: str = 
 
 
 def run_watch(symbols: str = None, interval: int = 10) -> int:
-    """实时监控股价（轮询，非交易所直连，有延迟）"""
+    """实时监控股价 + 持仓盈亏 + 止损止盈告警"""
+    from src.execution.paper_trader import PaperTrader
+    from src.risk.risk_engine import RiskEngine
+
     watch = symbols.split(",") if symbols else load_watchlist()
     watch = [s.strip() for s in watch if s.strip()]
-    print(f"\n监控 {watch}，每 {interval} 秒刷新 (Ctrl+C 退出)")
+
+    initial = get_runtime_config()["initial_capital"]
+    trader = PaperTrader(initial_capital=initial)
+    risk = RiskEngine()
+    positions = {p["symbol"]: p for p in trader.get_positions()}
+
+    # 合并自选股和持仓股
+    all_symbols = list(dict.fromkeys(watch + list(positions.keys())))
+
+    print(f"\n监控 {all_symbols}，每 {interval} 秒刷新 (Ctrl+C 退出)")
+    if positions:
+        print(f"持仓: {list(positions.keys())}")
+
     try:
         while True:
             print(f"\n--- {datetime.now().strftime('%H:%M:%S')} ---")
-            for sym in watch:
+            for sym in all_symbols:
                 d = fetch_realtime(sym)
-                if d:
-                    price = d.get("price", 0)
-                    src = d.get("source", "")
-                    pct = d.get("change_pct")
-                    line = f"  {sym}: {price:.2f}"
-                    if pct is not None:
-                        line += f" ({pct:+.2f}%)"
-                    line += f" [{src}]"
-                    print(line)
-                else:
+                if not d:
                     print(f"  {sym}: 无数据")
+                    continue
+
+                price = d.get("price", 0)
+                src = d.get("source", "")
+                pct = d.get("change_pct")
+                line = f"  {sym}: {price:.2f}"
+                if pct is not None:
+                    line += f" ({pct:+.2f}%)"
+                line += f" [{src}]"
+
+                # 持仓盈亏显示
+                if sym in positions:
+                    pos = positions[sym]
+                    cost = pos.get("cost", 0)
+                    qty = pos.get("quantity", 0)
+                    if cost > 0:
+                        pnl = (price - cost) * qty
+                        pnl_pct = (price / cost - 1) * 100
+                        line += f"  💰 {qty}股 成本{cost:.2f} 盈亏{pnl:+.2f}({pnl_pct:+.1f}%)"
+
+                print(line)
+
+                # 止损止盈告警
+                if sym in positions:
+                    alerts = risk.check_position_alerts(positions[sym], price)
+                    for alert in alerts:
+                        if alert["type"] == "stop_loss":
+                            print(f"    🚨 止损告警: {alert['reason']}")
+                        elif alert["type"] == "take_profit":
+                            print(f"    🎯 止盈告警: {alert['reason']}")
+
+            # 显示账户汇总
+            if positions:
+                prices_map = {}
+                for sym in positions:
+                    d = fetch_realtime(sym)
+                    if d:
+                        prices_map[sym] = d.get("price", positions[sym].get("cost", 0))
+                pv = trader.get_portfolio_value(prices_map)
+                total_pnl = pv - initial
+                print(f"  ── 账户: 总市值 {pv:.2f}  盈亏 {total_pnl:+.2f} ({total_pnl/initial*100:+.1f}%)")
+
             time.sleep(interval)
     except KeyboardInterrupt:
         print("\n已停止")
+    return 0
+
+
+def show_history(limit: int = 20, symbol: str = None) -> int:
+    """显示信号历史记录"""
+    from src.execution.paper_trader import PaperTrader
+
+    initial = get_runtime_config()["initial_capital"]
+    trader = PaperTrader(initial_capital=initial)
+    records = trader.get_signal_history(limit=limit, symbol=symbol)
+    if not records:
+        print("暂无信号记录")
+        return 0
+    print(f"\n=== 信号历史 (最近 {len(records)} 条) ===")
+    for r in records:
+        emoji = {"buy": "🟢", "sell": "🔴", "hold": "⚪"}.get(r.get("signal", ""), "⚪")
+        passed = "✅" if r.get("risk_passed") else "❌"
+        t = r.get("time", "")[:16]
+        print(
+            f"  {t} {emoji} {r['symbol']} {r['signal'].upper():4s} "
+            f"置信{r['confidence']:3.0f} 仓位{r.get('position_size', 0):.0%} "
+            f"风控{passed} [{r.get('investment_mode', '')}]"
+        )
+        if r.get("reason"):
+            # 截取理由前80字符
+            reason = r["reason"][:80].replace("\n", " ")
+            print(f"    {reason}...")
+        if not r.get("risk_passed") and r.get("risk_reason"):
+            print(f"    风控原因: {r['risk_reason']}")
     return 0
 
 
