@@ -22,23 +22,29 @@ SYSTEM_BY_MODE = {
     "short": """你是A股短线交易员。必须按短线思维分析：持仓数日~2周。
 强制侧重点：5日/20日均线、RSI超买超卖、量价配合、短期支撑阻力。
 禁止：讨论行业周期、长期估值、月线趋势。
-多空不明时 hold。仅输出 JSON，不要分析过程。""",
+你必须给出明确的 buy 或 sell 建议和具体的入场策略（何时买、买多少、止损止盈位）。
+仅输出 JSON，不要分析过程。""",
     "medium": """你是A股中线交易员。必须按中线思维分析：持仓数周~3月。
 强制侧重点：20日/60日均线趋势、技术面与基本面并重、估值合理性、波段高低点。
 勿过度关注：单日波动、RSI短期拐点。
-多空不明时 hold。仅输出 JSON，不要分析过程。""",
-    "long": """你是A股长线交易员。必须按长线思维分析：持仓数月~年。
-强制侧重点：月线/周线趋势、行业景气周期、基本面估值、分红与财务健康。
-禁止：讨论日线、5日均线、20日均线、RSI、短期量价——这些对长线无意义。
-若仅有日线数据，从日线推断中长期趋势，仍忽略单周单日波动。
-多空不明时 hold。仅输出 JSON，不要分析过程。""",
+你必须给出明确的操作策略（建仓/加仓/减仓/清仓）和具体的执行条件。
+仅输出 JSON，不要分析过程。""",
+    "long": """你是A股长线价值投资者。必须按长线思维分析：持仓数月~数年。
+你的视角是以年为单位的，短期1-3个月的波动对你毫无意义。
+强制侧重点：月线大趋势、行业景气周期位置（上升/见顶/下行/触底）、基本面估值水平、分红回报率。
+严禁出现以下词汇和分析：短期回调、周线震荡、近期涨跌、短期压力、短期支撑——这些都是噪音。
+你要回答的核心问题是：这个标的在未来1-3年是否值得持有？当前价格相对长期价值是高估还是低估？
+给出明确的长线策略：是否值得建仓/持有，以及分批建仓计划。
+仅输出 JSON，不要分析过程。""",
 }
 
 
-def _build_system_prompt(mode: str) -> str:
-    base = "分析时兼顾多空，多维度交叉验证后给出结论。"
+def _build_system_prompt(mode: str, trade_mode: str = "paper") -> str:
     mode = (mode or "medium").lower()
     specific = SYSTEM_BY_MODE.get(mode, SYSTEM_BY_MODE["medium"])
+    base = "分析时兼顾多空，多维度交叉验证后给出结论。"
+    if trade_mode == "paper":
+        base += "\n当前为模拟盘模式，目的是学习和验证策略。你应该更果断地给出 buy 或 sell 建议，不要轻易给 hold。即使把握只有60%也应该给出方向性判断和具体策略，因为模拟盘的核心价值在于积累决策经验。"
     return f"{specific}\n{base}"
 
 
@@ -51,6 +57,7 @@ class MiniMaxClient:
         base_url: Optional[str] = None,
         model: Optional[str] = None,
         timeout: Optional[float] = None,
+        trade_mode: str = "paper",
     ):
         cfg = get_model_config()
         self.api_key = api_key or cfg.get("api_key", "")
@@ -58,6 +65,7 @@ class MiniMaxClient:
         self.model = model or cfg.get("model", "MiniMax-M2.5")
         self.timeout = timeout or (int(cfg.get("timeout_ms", 300000)) / 1000.0)
         self.temperature = float(cfg.get("temperature", 0.2))
+        self.trade_mode = trade_mode
 
         if not self.api_key:
             raise ValueError("未设置 API Key，请在 config/model.yaml 的 minimax.api_key 中配置")
@@ -106,7 +114,7 @@ class MiniMaxClient:
             "Authorization": f"Bearer {self.api_key}",
             "x-api-key": self.api_key,
         }
-        system_content = _build_system_prompt(investment_mode)
+        system_content = _build_system_prompt(investment_mode, self.trade_mode)
         payload = {
             "model": self.model,
             "messages": [

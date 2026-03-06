@@ -59,12 +59,12 @@ class TradingSystem:
     """主交易系统"""
 
     def __init__(self):
-        self.analyzer = MiniMaxClient()
+        rt = get_runtime_config()
+        self.mode = rt["trade_mode"]
+        self.analyzer = MiniMaxClient(trade_mode=self.mode)
         self.risk_engine = RiskEngine()
         self.notifier = Notifier()
-        rt = get_runtime_config()
         self.paper_trader = PaperTrader(initial_capital=rt["initial_capital"])
-        self.mode = rt["trade_mode"]
         logger.info("交易系统初始化完成，交易模式: %s，投资模式: %s", self.mode, self.risk_engine.investment_mode)
 
     def scan(
