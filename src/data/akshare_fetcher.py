@@ -221,24 +221,31 @@ def fetch_daily(
 ) -> pd.DataFrame:
     """
     获取日线行情
-    数据源优先级: 东方财富 -> 新浪 -> 腾讯
+    数据源优先级: 东方财富 -> 新浪/baostock -> 腾讯
+    当请求天数较多时，数据量不足会继续尝试下一个数据源
     """
     end = end or datetime.now().strftime("%Y%m%d")
     start = start or (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+    # 期望最少行数：交易日约占自然日 70%，再取一半作为最低要求
+    min_rows = max(days * 7 // 20, 5) if days > 30 else 1
+
     if _is_etf(symbol):
         sources = [
             ("东方财富ETF", lambda: _fetch_etf_em(symbol, start, end, adjust, "daily")),
             ("东方财富", lambda: _fetch_em(symbol, start, end, adjust, "daily")),
-            ("baostock", lambda: _fetch_baostock(symbol, start, end, "daily")),
             ("腾讯", lambda: _fetch_tx(symbol, start, end)),
+            ("baostock", lambda: _fetch_baostock(symbol, start, end, "daily")),
         ]
     else:
         sources = [
             ("东方财富", lambda: _fetch_em(symbol, start, end, adjust, "daily")),
             ("新浪", lambda: _fetch_sina(symbol, start, end)),
-            ("baostock", lambda: _fetch_baostock(symbol, start, end, "daily")),
             ("腾讯", lambda: _fetch_tx(symbol, start, end)),
+            ("baostock", lambda: _fetch_baostock(symbol, start, end, "daily")),
         ]
+
+    best_df = pd.DataFrame()
+    best_name = ""
     for name, fetch_fn in sources:
         for attempt in range(MAX_RETRIES):
             try:
@@ -247,12 +254,24 @@ def fetch_daily(
                     df = _normalize_columns(df.copy())
                     if COL_CLOSE not in df.columns:
                         continue
-                    logger.info("日线数据 %s 来自 %s", symbol, name)
-                    return df
+                    # 数据量足够，直接返回
+                    if len(df) >= min_rows:
+                        logger.info("日线数据 %s 来自 %s (%d根)", symbol, name, len(df))
+                        return df
+                    # 数据不足但比之前的好，暂存
+                    if len(df) > len(best_df):
+                        best_df = df
+                        best_name = name
+                    break  # 该源数据不足，跳到下一个源
             except Exception as e:
                 logger.debug("%s 接口 %s 失败: %s", name, symbol, e)
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(FETCH_DELAY)
+
+    # 所有数据源都不够 min_rows，返回最好的
+    if not best_df.empty:
+        logger.info("日线数据 %s 来自 %s (%d根，不足预期%d)", symbol, best_name, len(best_df), min_rows)
+        return best_df
     logger.error("获取日线失败 %s，所有数据源均不可用", symbol)
     return pd.DataFrame()
 
