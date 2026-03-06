@@ -59,6 +59,30 @@ def _is_etf(symbol: str) -> bool:
     return s.startswith(("51", "52", "58", "159"))
 
 
+def _resample_daily_to(df: pd.DataFrame, freq: str) -> pd.DataFrame:
+    """将日线聚合为周线(W)或月线(ME)，要求 df 含 日期/开盘/收盘/最高/最低/成交量"""
+    if df.empty or COL_DATE not in df.columns or COL_CLOSE not in df.columns:
+        return pd.DataFrame()
+    tmp = df.copy()
+    tmp[COL_DATE] = pd.to_datetime(tmp[COL_DATE])
+    tmp = tmp.set_index(COL_DATE).sort_index()
+    agg = {
+        COL_OPEN: "first",
+        COL_CLOSE: "last",
+        COL_HIGH: "max",
+        COL_LOW: "min",
+    }
+    if COL_VOL in tmp.columns:
+        agg[COL_VOL] = "sum"
+    resampled = tmp.resample(freq).agg(agg).dropna(subset=[COL_CLOSE])
+    resampled.index = resampled.index.strftime("%Y-%m-%d")
+    resampled = resampled.reset_index().rename(columns={"index": COL_DATE})
+    # resample 后 index 名可能是日期列名本身
+    if COL_DATE not in resampled.columns and resampled.index.name == COL_DATE:
+        resampled = resampled.reset_index()
+    return resampled
+
+
 def _to_exchange_symbol(symbol: str) -> str:
     """000001 -> sz000001, 600519 -> sh600519"""
     code = symbol.strip().upper().split(".")[0]
@@ -234,60 +258,84 @@ def fetch_daily(
 
 
 def fetch_weekly(symbol: str, weeks: int = 52, adjust: str = "qfq") -> pd.DataFrame:
-    """获取周线（东方财富 → baostock 回退）"""
+    """获取周线（东方财富 → baostock → 日线聚合）"""
     end = datetime.now().strftime("%Y%m%d")
     start = (datetime.now() - timedelta(days=weeks * 7)).strftime("%Y%m%d")
-    # AKShare 数据源
+    min_rows = max(weeks // 4, 10)  # 至少需要 1/4 的预期数据量
+
+    # 1. AKShare 原生周线
     fetchers = [("ETF", _fetch_etf_em), ("股票", _fetch_em)] if _is_etf(symbol) else [("股票", _fetch_em)]
     for label, fn in fetchers:
         try:
             df = fn(symbol, start, end, adjust, "weekly")
             if df is not None and not df.empty:
                 df = _normalize_columns(df.copy())
-                if COL_CLOSE in df.columns:
+                if COL_CLOSE in df.columns and len(df) >= min_rows:
                     logger.info("周线数据 %s 来自 东方财富%s (%d周)", symbol, label, len(df))
                     return df
         except Exception as e:
             logger.debug("获取周线失败 %s (%s): %s", symbol, label, e)
-    # baostock 回退
+
+    # 2. baostock 周线
     try:
         df = _fetch_baostock(symbol, start, end, "weekly")
         if df is not None and not df.empty:
             df = _normalize_columns(df.copy())
-            if COL_CLOSE in df.columns:
+            if COL_CLOSE in df.columns and len(df) >= min_rows:
                 logger.info("周线数据 %s 来自 baostock (%d周)", symbol, len(df))
                 return df
     except Exception as e:
         logger.debug("baostock 周线失败 %s: %s", symbol, e)
+
+    # 3. 日线聚合为周线（最终回退）
+    logger.info("%s 周线接口数据不足，使用日线聚合", symbol)
+    daily = fetch_daily(symbol, days=weeks * 7, adjust=adjust)
+    if not daily.empty:
+        weekly = _resample_daily_to(daily, "W")
+        if not weekly.empty:
+            logger.info("周线数据 %s 来自 日线聚合 (%d周)", symbol, len(weekly))
+            return weekly
     return pd.DataFrame()
 
 
 def fetch_monthly(symbol: str, months: int = 24, adjust: str = "qfq") -> pd.DataFrame:
-    """获取月线（东方财富 → baostock 回退）"""
+    """获取月线（东方财富 → baostock → 日线聚合）"""
     end = datetime.now().strftime("%Y%m%d")
     start = (datetime.now() - timedelta(days=months * 31)).strftime("%Y%m%d")
-    # AKShare 数据源
+    min_rows = max(months // 4, 3)
+
+    # 1. AKShare 原生月线
     fetchers = [("ETF", _fetch_etf_em), ("股票", _fetch_em)] if _is_etf(symbol) else [("股票", _fetch_em)]
     for label, fn in fetchers:
         try:
             df = fn(symbol, start, end, adjust, "monthly")
             if df is not None and not df.empty:
                 df = _normalize_columns(df.copy())
-                if COL_CLOSE in df.columns:
+                if COL_CLOSE in df.columns and len(df) >= min_rows:
                     logger.info("月线数据 %s 来自 东方财富%s (%d月)", symbol, label, len(df))
                     return df
         except Exception as e:
             logger.debug("获取月线失败 %s (%s): %s", symbol, label, e)
-    # baostock 回退
+
+    # 2. baostock 月线
     try:
         df = _fetch_baostock(symbol, start, end, "monthly")
         if df is not None and not df.empty:
             df = _normalize_columns(df.copy())
-            if COL_CLOSE in df.columns:
+            if COL_CLOSE in df.columns and len(df) >= min_rows:
                 logger.info("月线数据 %s 来自 baostock (%d月)", symbol, len(df))
                 return df
     except Exception as e:
         logger.debug("baostock 月线失败 %s: %s", symbol, e)
+
+    # 3. 日线聚合为月线（最终回退）
+    logger.info("%s 月线接口数据不足，使用日线聚合", symbol)
+    daily = fetch_daily(symbol, days=months * 31, adjust=adjust)
+    if not daily.empty:
+        monthly = _resample_daily_to(daily, "ME")
+        if not monthly.empty:
+            logger.info("月线数据 %s 来自 日线聚合 (%d月)", symbol, len(monthly))
+            return monthly
     return pd.DataFrame()
 
 
