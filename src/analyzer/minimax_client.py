@@ -86,6 +86,8 @@ class MiniMaxClient:
         data_period: str = "daily",
         df_monthly=None,
         investment_mode: str = "medium",
+        market_overview=None,
+        sector_rank=None,
     ) -> TradeSignal:
         """
         分析股票并返回交易信号
@@ -100,6 +102,8 @@ class MiniMaxClient:
             data_period=data_period,
             df_monthly=df_monthly,
             investment_mode=investment_mode,
+            market_overview=market_overview,
+            sector_rank=sector_rank,
         )
         n_bars = len(df)
         n_monthly = len(df_monthly) if df_monthly is not None and not df_monthly.empty else 0

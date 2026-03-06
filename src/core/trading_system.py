@@ -40,7 +40,7 @@ class Notifier:
 状态: {action}
 
 分析理由:
-{signal.reason[:200]}...
+{signal.reason}
 
 止损: {signal.stop_loss or '未设置'}
 止盈: {signal.take_profit or '未设置'}
@@ -83,7 +83,7 @@ class TradingSystem:
         for symbol in watchlist:
             try:
                 logger.info("分析 %s... (模式=%s)", symbol, mode)
-                df, info, news, fund_flow, holder, valuation, sector, concept_hot, data_period, df_monthly = get_stock_data(
+                df, info, news, fund_flow, holder, valuation, sector, concept_hot, data_period, df_monthly, market_overview, sector_rank = get_stock_data(
                     symbol, investment_mode=mode
                 )
                 if df.empty:
@@ -100,6 +100,8 @@ class TradingSystem:
                     data_period=data_period,
                     df_monthly=df_monthly,
                     investment_mode=mode,
+                    market_overview=market_overview,
+                    sector_rank=sector_rank,
                 )
                 current_price = float(df.iloc[-1]["收盘"])
                 passed, reason = self.risk_engine.check_signal(
@@ -175,7 +177,8 @@ class TradingSystem:
         confirmed = _batch_confirm(signals)
         for signal in confirmed:
             try:
-                df, *_ = get_stock_data(signal.symbol, days=1, investment_mode="medium")  # 执行时仅需日线取价
+                price_data = get_stock_data(signal.symbol, days=1, investment_mode="medium")
+                df = price_data[0]  # 执行时仅需日线取价
                 if df.empty:
                     continue
                 price = float(df.iloc[-1]["收盘"])

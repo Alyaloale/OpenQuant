@@ -511,17 +511,49 @@ def fetch_concept_hot(limit: int = 10) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def fetch_market_overview() -> pd.DataFrame:
+    """获取大盘主要指数（上证/深证/创业板）实时行情"""
+    try:
+        df = ak.stock_zh_index_spot_em()
+        if df is None or df.empty:
+            return pd.DataFrame()
+        # 筛选主要指数
+        targets = ["上证指数", "深证成指", "创业板指", "科创50", "沪深300"]
+        name_col = "名称" if "名称" in df.columns else df.columns[1]
+        mask = df[name_col].isin(targets)
+        return df[mask] if mask.any() else df.head(5)
+    except Exception as e:
+        logger.debug("获取大盘指数失败: %s", e)
+        return pd.DataFrame()
+
+
+def fetch_sector_rank(limit: int = 10) -> pd.DataFrame:
+    """获取行业板块涨跌幅排行（今日最强/最弱板块）"""
+    try:
+        df = ak.stock_board_industry_name_em()
+        if df is None or df.empty:
+            return pd.DataFrame()
+        pct_col = "涨跌幅" if "涨跌幅" in df.columns else df.columns[2] if len(df.columns) > 2 else df.columns[-1]
+        df_sorted = df.sort_values(by=pct_col, ascending=False, na_position="last")
+        top = df_sorted.head(limit)
+        bottom = df_sorted.tail(5)
+        return pd.concat([top, bottom]).drop_duplicates()
+    except Exception as e:
+        logger.debug("获取行业排行失败: %s", e)
+        return pd.DataFrame()
+
+
 def get_stock_data(
     symbol: str,
     days: int = 30,
     investment_mode: str = "medium",
-) -> Tuple[pd.DataFrame, pd.DataFrame, List[str], pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, str, Optional[pd.DataFrame]]:
+):
     """
     获取完整股票数据，按投资模式选择 K 线周期：
     - short: 日线 20 根
     - medium: 日线 60 根
     - long: 周线 52 根 + 月线 24 根
-    返回: (df, info, news, fund_flow, holder, valuation, sector, concept_hot, data_period, df_monthly)
+    返回: (df, info, news, fund_flow, holder, valuation, sector, concept_hot, data_period, df_monthly, market_overview, sector_rank)
     """
     mode = (investment_mode or "medium").lower()
     df_monthly: Optional[pd.DataFrame] = None
@@ -549,24 +581,28 @@ def get_stock_data(
 
     if df.empty:
         empty = pd.DataFrame()
-        return df, empty, [], empty, empty, empty, empty, empty, data_period, None
+        return df, empty, [], empty, empty, empty, empty, empty, data_period, None, empty, empty
 
     etf = _is_etf(symbol)
 
-    # 并行获取辅助数据（info/news/fund_flow/holder/valuation）
+    # 并行获取辅助数据（info/news/fund_flow/holder/valuation + 大盘/板块排行）
     info = pd.DataFrame()
     news: List[str] = []
     fund_flow = pd.DataFrame()
     holder = pd.DataFrame()
     valuation = pd.DataFrame()
+    market_overview = pd.DataFrame()
+    sector_rank = pd.DataFrame()
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=7) as executor:
         if etf:
             futures = {
                 executor.submit(fetch_stock_info, symbol): "info",
                 executor.submit(fetch_stock_news, symbol): "news",
                 executor.submit(fetch_etf_realtime_info, symbol): "valuation",
                 executor.submit(fetch_etf_holdings, symbol): "holder",
+                executor.submit(fetch_market_overview): "market_overview",
+                executor.submit(fetch_sector_rank, 10): "sector_rank",
             }
         else:
             futures = {
@@ -575,6 +611,8 @@ def get_stock_data(
                 executor.submit(fetch_fund_flow, symbol): "fund_flow",
                 executor.submit(fetch_holder_stats, symbol): "holder",
                 executor.submit(fetch_stock_valuation, symbol): "valuation",
+                executor.submit(fetch_market_overview): "market_overview",
+                executor.submit(fetch_sector_rank, 10): "sector_rank",
             }
         for future in as_completed(futures):
             key = futures[future]
@@ -590,6 +628,10 @@ def get_stock_data(
                     holder = result
                 elif key == "valuation":
                     valuation = result
+                elif key == "market_overview":
+                    market_overview = result
+                elif key == "sector_rank":
+                    sector_rank = result
             except Exception as e:
                 logger.debug("并行获取 %s/%s 失败: %s", symbol, key, e)
 
@@ -601,7 +643,7 @@ def get_stock_data(
             industry_name = str(ir.iloc[0]["value"]).strip()
     sector = fetch_sector_info(industry_name) if industry_name else pd.DataFrame()
     concept_hot = fetch_concept_hot(limit=8)
-    return df, info, news, fund_flow, holder, valuation, sector, concept_hot, data_period, df_monthly
+    return df, info, news, fund_flow, holder, valuation, sector, concept_hot, data_period, df_monthly, market_overview, sector_rank
 
 
 def fetch_realtime(symbol: str) -> dict:
