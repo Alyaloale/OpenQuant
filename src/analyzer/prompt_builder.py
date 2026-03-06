@@ -21,6 +21,11 @@ MODE_HINTS = {
 }
 
 
+def _is_etf(symbol: str) -> bool:
+    s = str(symbol).strip().zfill(6)
+    return s.startswith(("51", "52", "58", "159"))
+
+
 def build_analysis_prompt(
     symbol: str,
     df: pd.DataFrame,
@@ -72,21 +77,40 @@ def build_analysis_prompt(
         mc = [c for c in mc if c in df_m.columns]
         monthly_str = df_m[mc].tail(12).to_string()
 
+    etf = _is_etf(symbol)
     mode = investment_mode.lower() if investment_mode else "medium"
     mode_hint = MODE_HINTS.get(mode, MODE_HINTS["medium"])
     data_note = ""
     if data_period == "daily_fallback" and mode == "long":
         data_note = "\n【重要】当前为日线数据（周线接口不可用），但你必须按 long 模式分析：侧重中长期趋势、行业周期、估值，勿被日线短期波动干扰。\n"
 
-    prompt = f"""你是一位严谨的量化交易员，请对股票 {symbol} 进行全面分析后给出交易建议。
+    # ETF 与股票使用不同的分析框架
+    if etf:
+        etf_note = "\n【标的类型】这是一只 **ETF 基金**，不是个股。分析时请注意：\n- ETF 跟踪特定指数/行业，重点分析其跟踪的行业/板块趋势\n- 关注溢价率、成交量、资金流入流出\n- 重仓股表现代替个股基本面分析\n- 不适用个股财务指标（PE/ROE等），改用行业景气度判断\n"
+        holder_label = "ETF 重仓股（前10大持仓）"
+        valuation_label = "ETF 实时信息（溢价率、市价等）"
+        fund_flow_section = ""  # ETF 无个股资金流向
+        analysis_dim_1 = "1. **行业/板块景气度**：跟踪行业的基本面、政策导向、景气周期"
+        analysis_dim_3 = "3. **重仓股表现**：前10大持仓的整体走势和估值水平"
+        analysis_dim_4 = "4. **ETF 资金动向**：成交量变化、溢价/折价率趋势"
+    else:
+        etf_note = ""
+        holder_label = "筹码分布/股东持股（十大流通股东等）"
+        valuation_label = "估值与财务指标（市盈率、市净率、ROE、净利润增长率等）"
+        fund_flow_section = f"\n## 资金流向\n{fund_flow_str}\n"
+        analysis_dim_1 = "1. **基本状况**：估值、行业地位、财务健康、经营状况"
+        analysis_dim_3 = "3. **筹码分布**：股东结构、集中度、近期变动、筹码成本区"
+        analysis_dim_4 = "4. **资金流动**：主力/散户资金进出、净流入流出、量价配合"
 
+    prompt = f"""你是一位严谨的量化交易员，请对{'ETF基金' if etf else '股票'} {symbol} 进行全面分析后给出交易建议。
+{etf_note}
 ## 投资模式（必须严格遵守）
 当前为 **{mode}** 模式：{mode_hint}
 请严格按此模式的分析侧重点和持仓周期给出建议。{data_note}
 
 ## 市场数据（最近{n_tail}个{period_label}K线）
 {tail_df.to_string()}
-{"\n\n## 月线数据（长线模式）\n" + monthly_str + "\n" if monthly_str else ""}
+{chr(10) + chr(10) + "## 月线数据（长线模式）" + chr(10) + monthly_str + chr(10) if monthly_str else ""}
 
 ## 最新价格信息
 - 最新收盘价: {latest['收盘']:.2f}
@@ -100,14 +124,11 @@ def build_analysis_prompt(
 
 ## 近期相关新闻
 {news_str}
-
-## 资金流向
-{fund_flow_str}
-
-## 筹码分布/股东持股（十大流通股东等）
+{fund_flow_section}
+## {holder_label}
 {holder_str}
 
-## 估值与财务指标（市盈率、市净率、ROE、净利润增长率等）
+## {valuation_label}
 {valuation_str}
 
 ## 所属行业板块表现
@@ -118,17 +139,17 @@ def build_analysis_prompt(
 
 ## 分析要求（必须完成以下步骤后再给出结论）
 
-**分析维度需涵盖**：基本状况、市场趋势热点、筹码分布、资金流动、技术面、情绪面。
+**分析维度需涵盖**：{'行业景气度、ETF资金动向、重仓股、技术面、市场热点、情绪面' if etf else '基本状况、市场趋势热点、筹码分布、资金流动、技术面、情绪面'}。
 
 **第一步 - 多空因素列举**
 - 做多支撑因素（至少列出2-3条）
 - 做空/观望因素（至少列出2-3条）
 
 **第二步 - 多维度交叉验证**
-1. **基本状况**：估值、行业地位、财务健康、经营状况
+{analysis_dim_1}
 2. **市场趋势热点**：当前板块/行业热度、政策导向、市场情绪
-3. **筹码分布**：股东结构、集中度、近期变动、筹码成本区
-4. **资金流动**：主力/散户资金进出、净流入流出、量价配合
+{analysis_dim_3}
+{analysis_dim_4}
 5. 技术面：趋势、支撑阻力、量价关系、均线排列、RSI区域
 6. 情绪面：新闻倾向、题材炒作
 7. 若多维度结论矛盾，需说明孰轻孰重及理由
@@ -145,7 +166,7 @@ def build_analysis_prompt(
 {{
     "signal": "buy/sell/hold",
     "confidence": 85,
-    "reason": "详细分析理由，包括技术信号和基本面支撑",
+    "reason": "详细分析理由，包括技术信号和{'行业景气度' if etf else '基本面'}支撑",
     "stop_loss": 10.5,
     "take_profit": 12.8,
     "position_size": 0.2,

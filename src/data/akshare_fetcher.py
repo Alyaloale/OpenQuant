@@ -162,13 +162,15 @@ def _fetch_baostock(symbol: str, start: str, end: str, period: str = "daily") ->
     # baostock 日期格式: YYYY-MM-DD
     start_fmt = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
     end_fmt = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
+    # ETF 使用不复权（adjustflag=3），股票使用前复权（adjustflag=2）
+    adj = "3" if _is_etf(symbol) else "2"
     rs = bs.query_history_k_data_plus(
         _bs_symbol(symbol),
         "date,open,high,low,close,volume",
         start_date=start_fmt,
         end_date=end_fmt,
         frequency=_bs_frequency(period),
-        adjustflag="2",  # 前复权
+        adjustflag=adj,
     )
     if rs.error_code != "0":
         logger.debug("baostock 获取失败 %s: %s", symbol, rs.error_msg)
@@ -287,6 +289,40 @@ def fetch_monthly(symbol: str, months: int = 24, adjust: str = "qfq") -> pd.Data
     except Exception as e:
         logger.debug("baostock 月线失败 %s: %s", symbol, e)
     return pd.DataFrame()
+
+
+# ── ETF 专用基本面数据 ──
+
+def fetch_etf_realtime_info(symbol: str) -> pd.DataFrame:
+    """获取 ETF 实时信息（溢价率、市价等）"""
+    try:
+        df = ak.fund_etf_spot_em()
+        if df is None or df.empty:
+            return pd.DataFrame()
+        code_col = "代码" if "代码" in df.columns else "基金代码"
+        if code_col not in df.columns:
+            code_col = df.columns[0]
+        row = df[df[code_col].astype(str).str.zfill(6) == str(symbol).zfill(6)]
+        return row if not row.empty else pd.DataFrame()
+    except Exception as e:
+        logger.debug("获取ETF实时信息失败 %s: %s", symbol, e)
+        return pd.DataFrame()
+
+
+def fetch_etf_holdings(symbol: str) -> pd.DataFrame:
+    """获取 ETF 持仓/重仓股（最近一期）"""
+    try:
+        year = str(datetime.now().year)
+        df = ak.fund_portfolio_hold_em(symbol=symbol, date=year)
+        if df is None or df.empty:
+            # 尝试上一年
+            df = ak.fund_portfolio_hold_em(symbol=symbol, date=str(int(year) - 1))
+        if df is not None and not df.empty:
+            return df.head(10)  # 前 10 大重仓
+        return pd.DataFrame()
+    except Exception as e:
+        logger.debug("获取ETF持仓失败 %s: %s", symbol, e)
+        return pd.DataFrame()
 
 
 def fetch_stock_info(symbol: str) -> pd.DataFrame:
@@ -449,14 +485,18 @@ def get_stock_data(
 
     etf = _is_etf(symbol)
 
-    # ETF 没有个股基本面、股东、资金流向、财务指标，跳过以加速
+    # ETF 使用专用接口获取基本面（溢价率、重仓股等）
     if etf:
-        info = fetch_stock_info(symbol)  # ETF 可能有基础信息
+        info = fetch_stock_info(symbol)
         time.sleep(FETCH_DELAY)
         news = fetch_stock_news(symbol)
+        time.sleep(FETCH_DELAY)
+        # ETF 实时信息（溢价率等）放入 valuation
+        valuation = fetch_etf_realtime_info(symbol)
+        time.sleep(FETCH_DELAY)
+        # ETF 重仓股放入 holder
+        holder = fetch_etf_holdings(symbol)
         fund_flow = pd.DataFrame()
-        holder = pd.DataFrame()
-        valuation = pd.DataFrame()
     else:
         info = fetch_stock_info(symbol)
         time.sleep(FETCH_DELAY)
