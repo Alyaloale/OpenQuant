@@ -1,0 +1,21 @@
+# OpenQuant 依赖
+# Python 3.9+
+
+# 数据
+akshare>=1.14.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# 配置
+python-dotenv>=1.0.0
+pyyaml>=6.0
+
+# API 请求
+httpx>=0.25.0
+
+# 定时任务
+apscheduler>=3.10.0
+
+# 测试
+pytest>=7.4.0
+pytest-cov>=4.1.0

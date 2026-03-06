@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Config - sensitive（含 API Key）
+.env
+config/.env
+config/model.yaml
+*.secret
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data
+data/db/*.sqlite
+!data/db/.gitkeep
+data/cache/
+*.parquet
+*.h5
+*.hdf5
+
+# Logs
+logs/*
+!logs/.gitkeep
+# 日期命名的日志目录（如 TRADE_LOG_DIR=. 时）
+20*/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# OS
+.DS_Store
+Thumbs.db

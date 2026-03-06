@@ -1,0 +1,54 @@
+# OpenQuant 交易参数配置
+# 风控引擎将严格遵循以下硬规则
+# 路径可通过环境变量覆盖: TRADE_DATA_DIR, TRADE_LOG_DIR
+
+# 数据与日志路径（默认相对项目根）
+paths:
+  data_dir: data          # 数据根，含 db/cache
+  log_dir: logs           # 日志根，按日期建子目录 YYYYMMDD/trading.log
+
+# 运行参数
+runtime:
+  trade_mode: paper          # paper(模拟) / live(实盘)
+  initial_capital: 10000     # 初始资金
+
+# 通知（可选）
+notification:
+  dingtalk_webhook: ""
+  feishu_webhook: ""
+
+# 投资模式（操作前提，影响 AI 分析侧重点）
+# short: 短线（数日~2周，侧重技术面、量价）
+# medium: 中线（数周~3月，技术+基本面均衡）
+# long: 长线（数月~年，侧重基本面、估值、行业）
+investment_mode: medium
+
+risk:
+  # 仓位控制
+  max_position_pct: 0.30          # 单票最大仓位 30%
+  max_positions: 5                # 最多同时持有 5 只
+  min_position_pct: 0.05          # 单票最小仓位 5%
+
+  # 止损止盈 (硬规则)
+  stop_loss_pct: 0.05             # 止损线 5%
+  take_profit_pct: 0.10           # 止盈线 10%
+
+  # 单日风控
+  max_daily_loss_pct: 0.02        # 单日最大亏损 2%，触发则全天停止
+
+  # AI 建议阈值 (可人工覆盖)
+  min_confidence: 0.70             # 0=不限制；0.70=仅将>=70%的纳入可执行信号；低置信度也会输出分析
+
+trading:
+  # 交易标的
+  market: "A"                     # A股
+  exclude_st: true                # 排除 ST
+  exclude_kcb: true               # 排除科创板
+
+  # 模拟盘
+  paper:
+    initial_capital: 10000        # 初始资金 1 万
+    commission_rate: 0.0003       # 佣金率 万三
+
+  # 扫描频率 (分钟)
+  scan_interval: 30

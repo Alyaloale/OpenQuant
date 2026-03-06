@@ -1,0 +1,161 @@
+"""提示词构建 - 将行情与指标组装为分析 Prompt"""
+
+import pandas as pd
+
+from src.data.technical_indicators import calc_ma, calc_rsi
+
+
+def _safe_float(val, default: float = 0):
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+MODE_HINTS = {
+    "short": "短线（持仓数日~2周）：侧重短期技术面、量价、超买超卖，快进快出。",
+    "medium": "中线（持仓数周~3月）：技术面与基本面均衡，关注趋势与估值。",
+    "long": "长线（持仓数月~年）：侧重基本面、估值、行业景气、分红，忽略短期波动。",
+}
+
+
+def build_analysis_prompt(
+    symbol: str,
+    df: pd.DataFrame,
+    info: pd.DataFrame = None,
+    news: list = None,
+    fund_flow: pd.DataFrame = None,
+    holder: pd.DataFrame = None,
+    valuation: pd.DataFrame = None,
+    sector: pd.DataFrame = None,
+    concept_hot: pd.DataFrame = None,
+    data_period: str = "daily",
+    df_monthly: pd.DataFrame = None,
+    investment_mode: str = "medium",
+) -> str:
+    """
+    构建 MiniMax 分析用 Prompt
+    """
+    df = df.copy()
+    df = calc_ma(df)
+    df["RSI"] = calc_rsi(df)
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2] if len(df) > 1 else latest
+    pct_change = (latest["收盘"] / prev["收盘"] - 1) * 100 if len(df) > 1 else 0
+
+    # 按周期选取展示条数：日线10根，周线10根，月线全部
+    n_tail = 10 if data_period in ("daily", "daily_fallback", "weekly") else min(24, len(df))
+    cols = ["日期", "开盘", "收盘", "最高", "最低", "成交量"]
+    ma_cols = [c for c in df.columns if c.startswith("MA")]
+    display_cols = cols + ma_cols + ["RSI"]
+    display_cols = [c for c in display_cols if c in df.columns]
+    tail_df = df.tail(n_tail)[display_cols]
+    period_label = {"daily": "交易日", "daily_fallback": "交易日(周线回退)", "weekly": "周", "monthly": "月"}.get(data_period, "日")
+
+    info_str = info.to_string() if info is not None and not info.empty else "暂无数据"
+    news_str = "\n".join(f"- {n}" for n in (news or [])[:5]) if news else "暂无新闻"
+    fund_flow_str = fund_flow.to_string() if fund_flow is not None and not fund_flow.empty else "暂无数据"
+    holder_str = holder.to_string() if holder is not None and not holder.empty else "暂无数据"
+    valuation_str = valuation.to_string() if valuation is not None and not valuation.empty else "暂无数据"
+    sector_str = sector.to_string() if sector is not None and not sector.empty else "暂无数据"
+    concept_str = concept_hot.to_string() if concept_hot is not None and not concept_hot.empty else "暂无数据"
+    monthly_str = ""
+    if df_monthly is not None and not df_monthly.empty:
+        df_m = df_monthly.copy()
+        df_m = calc_ma(df_m)
+        df_m["RSI"] = calc_rsi(df_m)
+        mc = ["日期", "开盘", "收盘", "最高", "最低", "成交量"]
+        mc = mc + [c for c in df_m.columns if c.startswith("MA") or c == "RSI"]
+        mc = [c for c in mc if c in df_m.columns]
+        monthly_str = df_m[mc].tail(12).to_string()
+
+    mode = investment_mode.lower() if investment_mode else "medium"
+    mode_hint = MODE_HINTS.get(mode, MODE_HINTS["medium"])
+    data_note = ""
+    if data_period == "daily_fallback" and mode == "long":
+        data_note = "\n【重要】当前为日线数据（周线接口不可用），但你必须按 long 模式分析：侧重中长期趋势、行业周期、估值，勿被日线短期波动干扰。\n"
+
+    prompt = f"""你是一位严谨的量化交易员，请对股票 {symbol} 进行全面分析后给出交易建议。
+
+## 投资模式（必须严格遵守）
+当前为 **{mode}** 模式：{mode_hint}
+请严格按此模式的分析侧重点和持仓周期给出建议。{data_note}
+
+## 市场数据（最近{n_tail}个{period_label}K线）
+{tail_df.to_string()}
+{"\n\n## 月线数据（长线模式）\n" + monthly_str + "\n" if monthly_str else ""}
+
+## 最新价格信息
+- 最新收盘价: {latest['收盘']:.2f}
+- 较前周期涨跌: {pct_change:.2f}%
+- 5日均线: {_safe_float(latest.get('MA5'), latest['收盘']):.2f}
+- 20日均线: {_safe_float(latest.get('MA20'), latest['收盘']):.2f}
+- RSI(14): {_safe_float(latest.get('RSI'), 50):.2f}
+
+## 基本面信息
+{info_str}
+
+## 近期相关新闻
+{news_str}
+
+## 资金流向
+{fund_flow_str}
+
+## 筹码分布/股东持股（十大流通股东等）
+{holder_str}
+
+## 估值与财务指标（市盈率、市净率、ROE、净利润增长率等）
+{valuation_str}
+
+## 所属行业板块表现
+{sector_str}
+
+## 当前热门概念板块（市场热点参考）
+{concept_str}
+
+## 分析要求（必须完成以下步骤后再给出结论）
+
+**分析维度需涵盖**：基本状况、市场趋势热点、筹码分布、资金流动、技术面、情绪面。
+
+**第一步 - 多空因素列举**
+- 做多支撑因素（至少列出2-3条）
+- 做空/观望因素（至少列出2-3条）
+
+**第二步 - 多维度交叉验证**
+1. **基本状况**：估值、行业地位、财务健康、经营状况
+2. **市场趋势热点**：当前板块/行业热度、政策导向、市场情绪
+3. **筹码分布**：股东结构、集中度、近期变动、筹码成本区
+4. **资金流动**：主力/散户资金进出、净流入流出、量价配合
+5. 技术面：趋势、支撑阻力、量价关系、均线排列、RSI区域
+6. 情绪面：新闻倾向、题材炒作
+7. 若多维度结论矛盾，需说明孰轻孰重及理由
+
+**第三步 - 综合判断**
+- 多空因素哪方更占优？
+- 是否存在关键不确定性？若有，应降低置信度或给出 hold
+- 仅当多空对比明确时，才给出 buy 或 sell；否则应为 hold
+
+**第四步 - 输出结论**
+仅输出下方 JSON，不要输出分析过程。分析过程在内心完成，确保结论经过全面权衡。
+
+## 输出格式（必须严格按JSON格式，仅输出此块）
+{{
+    "signal": "buy/sell/hold",
+    "confidence": 85,
+    "reason": "详细分析理由，包括技术信号和基本面支撑",
+    "stop_loss": 10.5,
+    "take_profit": 12.8,
+    "position_size": 0.2,
+    "risk_level": "low/medium/high"
+}}
+
+注意：
+- confidence 必须是 0-100 的整数；多空因素均衡时宜给 50-70，结论明确时才给 75+
+- signal 只能是 buy/sell/hold 之一；多空不明时优先 hold
+- stop_loss 和 take_profit 必须是具体价格数字
+- position_size 是建议仓位比例(0-1)
+"""
+    return prompt

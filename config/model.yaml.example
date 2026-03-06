@@ -1,0 +1,20 @@
+# 大模型配置示例
+# 使用: 复制为 config/model.yaml 并填写 api_key
+#   cp config/model.yaml.example config/model.yaml
+
+minimax:
+  api_key: ""                    # 必填，MiniMax API Key
+  base_url: https://api.minimaxi.com/anthropic
+  model: MiniMax-M2.5
+  timeout_ms: 300000
+  temperature: 0.2
+
+deepseek:
+  api_key: ""                    # 可选，DeepSeek API Key
+  base_url: https://api.deepseek.com
+  model: deepseek-chat
+  temperature: 0.5
+  max_tokens: 4096
+  top_p: 1.0
+  frequency_penalty: 0.0
+  presence_penalty: 0.0
