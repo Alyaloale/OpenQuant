@@ -1,7 +1,7 @@
 """
-AKShare 数据获取
-日线行情、基本面、新闻
-优先东方财富，失败时自动切换腾讯/新浪数据源
+数据获取
+日线/周线/月线行情、基本面、新闻
+优先东方财富(AKShare)，失败时切换 baostock / 腾讯 / 新浪
 """
 
 import logging
@@ -12,6 +12,12 @@ from typing import List, Optional, Tuple
 
 import akshare as ak
 import pandas as pd
+
+try:
+    import baostock as bs
+    _HAS_BAOSTOCK = True
+except ImportError:
+    _HAS_BAOSTOCK = False
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +53,12 @@ COL_LOW = "最低"
 COL_VOL = "成交量"
 
 
+def _is_etf(symbol: str) -> bool:
+    """判断是否为 ETF（上交所 51/52/58 开头，深交所 159 开头）"""
+    s = str(symbol).strip().zfill(6)
+    return s.startswith(("51", "52", "58", "159"))
+
+
 def _to_exchange_symbol(symbol: str) -> str:
     """000001 -> sz000001, 600519 -> sh600519"""
     code = symbol.strip().upper().split(".")[0]
@@ -72,6 +84,18 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     if COL_DATE in df.columns and df[COL_DATE].dtype == object:
         df[COL_DATE] = pd.to_datetime(df[COL_DATE]).dt.strftime("%Y-%m-%d")
     return df
+
+
+def _fetch_etf_em(symbol: str, start: str, end: str, adjust: str, period: str = "daily") -> pd.DataFrame:
+    """东方财富 ETF 行情（fund_etf_hist_em），支持 daily/weekly/monthly"""
+    df = ak.fund_etf_hist_em(
+        symbol=symbol,
+        period=period,
+        start_date=start,
+        end_date=end,
+        adjust=adjust,
+    )
+    return df if df is not None and not df.empty else pd.DataFrame()
 
 
 def _fetch_em(symbol: str, start: str, end: str, adjust: str, period: str = "daily") -> pd.DataFrame:
@@ -100,6 +124,68 @@ def _fetch_tx(symbol: str, start: str, end: str) -> pd.DataFrame:
     return df if df is not None and not df.empty else pd.DataFrame()
 
 
+# ── baostock 数据源（免费、稳定、支持 ETF 周线/月线） ──
+
+_bs_logged_in = False
+
+
+def _bs_login():
+    """baostock 需要先登录（免费，无需注册）"""
+    global _bs_logged_in
+    if not _HAS_BAOSTOCK:
+        return False
+    if not _bs_logged_in:
+        lg = bs.login()
+        if lg.error_code == "0":
+            _bs_logged_in = True
+        else:
+            logger.debug("baostock 登录失败: %s", lg.error_msg)
+    return _bs_logged_in
+
+
+def _bs_symbol(symbol: str) -> str:
+    """515790 -> sh.515790"""
+    code = str(symbol).strip().zfill(6)
+    prefix = "sh" if code.startswith(("6", "5", "9")) else "sz"
+    return f"{prefix}.{code}"
+
+
+def _bs_frequency(period: str) -> str:
+    """转换周期: daily->d, weekly->w, monthly->m"""
+    return {"daily": "d", "weekly": "w", "monthly": "m"}.get(period, "d")
+
+
+def _fetch_baostock(symbol: str, start: str, end: str, period: str = "daily") -> pd.DataFrame:
+    """baostock 获取 K 线（支持 daily/weekly/monthly，支持 ETF）"""
+    if not _HAS_BAOSTOCK or not _bs_login():
+        return pd.DataFrame()
+    # baostock 日期格式: YYYY-MM-DD
+    start_fmt = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
+    end_fmt = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
+    rs = bs.query_history_k_data_plus(
+        _bs_symbol(symbol),
+        "date,open,high,low,close,volume",
+        start_date=start_fmt,
+        end_date=end_fmt,
+        frequency=_bs_frequency(period),
+        adjustflag="2",  # 前复权
+    )
+    if rs.error_code != "0":
+        logger.debug("baostock 获取失败 %s: %s", symbol, rs.error_msg)
+        return pd.DataFrame()
+    rows = []
+    while rs.next():
+        rows.append(rs.get_row_data())
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume"])
+    # baostock 返回的是字符串，需要转数值
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["close"])
+    return df if not df.empty else pd.DataFrame()
+
+
 def fetch_daily(
     symbol: str,
     start: str = None,
@@ -113,11 +199,20 @@ def fetch_daily(
     """
     end = end or datetime.now().strftime("%Y%m%d")
     start = start or (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-    sources = [
-        ("东方财富", lambda: _fetch_em(symbol, start, end, adjust, "daily")),
-        ("新浪", lambda: _fetch_sina(symbol, start, end)),
-        ("腾讯", lambda: _fetch_tx(symbol, start, end)),
-    ]
+    if _is_etf(symbol):
+        sources = [
+            ("东方财富ETF", lambda: _fetch_etf_em(symbol, start, end, adjust, "daily")),
+            ("东方财富", lambda: _fetch_em(symbol, start, end, adjust, "daily")),
+            ("baostock", lambda: _fetch_baostock(symbol, start, end, "daily")),
+            ("腾讯", lambda: _fetch_tx(symbol, start, end)),
+        ]
+    else:
+        sources = [
+            ("东方财富", lambda: _fetch_em(symbol, start, end, adjust, "daily")),
+            ("新浪", lambda: _fetch_sina(symbol, start, end)),
+            ("baostock", lambda: _fetch_baostock(symbol, start, end, "daily")),
+            ("腾讯", lambda: _fetch_tx(symbol, start, end)),
+        ]
     for name, fetch_fn in sources:
         for attempt in range(MAX_RETRIES):
             try:
@@ -137,34 +232,60 @@ def fetch_daily(
 
 
 def fetch_weekly(symbol: str, weeks: int = 52, adjust: str = "qfq") -> pd.DataFrame:
-    """获取周线（仅东方财富支持）"""
+    """获取周线（东方财富 → baostock 回退）"""
     end = datetime.now().strftime("%Y%m%d")
     start = (datetime.now() - timedelta(days=weeks * 7)).strftime("%Y%m%d")
+    # AKShare 数据源
+    fetchers = [("ETF", _fetch_etf_em), ("股票", _fetch_em)] if _is_etf(symbol) else [("股票", _fetch_em)]
+    for label, fn in fetchers:
+        try:
+            df = fn(symbol, start, end, adjust, "weekly")
+            if df is not None and not df.empty:
+                df = _normalize_columns(df.copy())
+                if COL_CLOSE in df.columns:
+                    logger.info("周线数据 %s 来自 东方财富%s (%d周)", symbol, label, len(df))
+                    return df
+        except Exception as e:
+            logger.debug("获取周线失败 %s (%s): %s", symbol, label, e)
+    # baostock 回退
     try:
-        df = _fetch_em(symbol, start, end, adjust, "weekly")
+        df = _fetch_baostock(symbol, start, end, "weekly")
         if df is not None and not df.empty:
             df = _normalize_columns(df.copy())
             if COL_CLOSE in df.columns:
-                logger.info("周线数据 %s 来自 东方财富 (%d周)", symbol, len(df))
+                logger.info("周线数据 %s 来自 baostock (%d周)", symbol, len(df))
                 return df
     except Exception as e:
-        logger.debug("获取周线失败 %s: %s", symbol, e)
+        logger.debug("baostock 周线失败 %s: %s", symbol, e)
     return pd.DataFrame()
 
 
 def fetch_monthly(symbol: str, months: int = 24, adjust: str = "qfq") -> pd.DataFrame:
-    """获取月线（仅东方财富支持）"""
+    """获取月线（东方财富 → baostock 回退）"""
     end = datetime.now().strftime("%Y%m%d")
     start = (datetime.now() - timedelta(days=months * 31)).strftime("%Y%m%d")
+    # AKShare 数据源
+    fetchers = [("ETF", _fetch_etf_em), ("股票", _fetch_em)] if _is_etf(symbol) else [("股票", _fetch_em)]
+    for label, fn in fetchers:
+        try:
+            df = fn(symbol, start, end, adjust, "monthly")
+            if df is not None and not df.empty:
+                df = _normalize_columns(df.copy())
+                if COL_CLOSE in df.columns:
+                    logger.info("月线数据 %s 来自 东方财富%s (%d月)", symbol, label, len(df))
+                    return df
+        except Exception as e:
+            logger.debug("获取月线失败 %s (%s): %s", symbol, label, e)
+    # baostock 回退
     try:
-        df = _fetch_em(symbol, start, end, adjust, "monthly")
+        df = _fetch_baostock(symbol, start, end, "monthly")
         if df is not None and not df.empty:
             df = _normalize_columns(df.copy())
             if COL_CLOSE in df.columns:
-                logger.info("月线数据 %s 来自 东方财富 (%d月)", symbol, len(df))
+                logger.info("月线数据 %s 来自 baostock (%d月)", symbol, len(df))
                 return df
     except Exception as e:
-        logger.debug("获取月线失败 %s: %s", symbol, e)
+        logger.debug("baostock 月线失败 %s: %s", symbol, e)
     return pd.DataFrame()
 
 
@@ -325,16 +446,28 @@ def get_stock_data(
     if df.empty:
         empty = pd.DataFrame()
         return df, empty, [], empty, empty, empty, empty, empty, data_period, None
-    time.sleep(FETCH_DELAY)
-    info = fetch_stock_info(symbol)
-    time.sleep(FETCH_DELAY)
-    news = fetch_stock_news(symbol)
-    time.sleep(FETCH_DELAY)
-    fund_flow = fetch_fund_flow(symbol)
-    time.sleep(FETCH_DELAY)
-    holder = fetch_holder_stats(symbol)
-    time.sleep(FETCH_DELAY)
-    valuation = fetch_stock_valuation(symbol)
+
+    etf = _is_etf(symbol)
+
+    # ETF 没有个股基本面、股东、资金流向、财务指标，跳过以加速
+    if etf:
+        info = fetch_stock_info(symbol)  # ETF 可能有基础信息
+        time.sleep(FETCH_DELAY)
+        news = fetch_stock_news(symbol)
+        fund_flow = pd.DataFrame()
+        holder = pd.DataFrame()
+        valuation = pd.DataFrame()
+    else:
+        info = fetch_stock_info(symbol)
+        time.sleep(FETCH_DELAY)
+        news = fetch_stock_news(symbol)
+        time.sleep(FETCH_DELAY)
+        fund_flow = fetch_fund_flow(symbol)
+        time.sleep(FETCH_DELAY)
+        holder = fetch_holder_stats(symbol)
+        time.sleep(FETCH_DELAY)
+        valuation = fetch_stock_valuation(symbol)
+
     time.sleep(FETCH_DELAY)
     industry_name = ""
     if info is not None and not info.empty and "item" in info.columns and "value" in info.columns:
